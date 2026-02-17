@@ -19,7 +19,7 @@ playwright install chromium
 ### Goodreads → Skoob (default)
 
 1. Export your Goodreads library at [goodreads.com/review/import](https://www.goodreads.com/review/import).
-2. Save the file as `goodreads_library_export.csv` in this folder.
+2. Save the file as `input/goodreads_library_export.csv` (create the `input/` folder if it doesn't exist).
 3. Run:
 
 ```bash

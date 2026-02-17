@@ -3,7 +3,7 @@ Configuration constants, URLs, and shelf mappings for the Goodreads ↔ Skoob sy
 """
 
 # --- File paths ---
-GOODREADS_EXPORT_FILE: str = "goodreads_library_export.csv"
+GOODREADS_EXPORT_FILE: str = "input/goodreads_library_export.csv"
 FAILED_BOOKS_FILE: str = "failed_books.csv"
 SKOOB_EXPORT_FILE: str = "skoob_export_for_goodreads.csv"
 
