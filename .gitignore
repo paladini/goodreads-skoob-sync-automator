@@ -2,3 +2,4 @@ input/goodreads_library_export.csv
 
 __pycache__
 __pycache__/*
+execution.log

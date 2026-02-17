@@ -1,26 +1,27 @@
 """
 Skoob → Goodreads synchronisation.
 
-Scrapes the authenticated user's Skoob shelves and generates a
-Goodreads-compatible import CSV.
+Scrapes the authenticated user's Skoob shelves using the v1 JSON API
+and produces a Goodreads-compatible CSV via ``etl.generate_goodreads_csv``.
 """
 
-import random
-import re
 import time
+import json
 from typing import Any
 
 from playwright.sync_api import Page
 from loguru import logger
 
 from config import (
-    JITTER_MAX,
-    JITTER_MIN,
     SKOOB_STATUS_IDS,
     SKOOB_TO_GOODREADS_SHELF,
+    SKOOB_V1_BOOKCASE_URL,
+    JITTER_MIN,
+    JITTER_MAX,
 )
 from etl import generate_goodreads_csv
 
+import random
 
 # ---------------------------------------------------------------------------
 # Public
@@ -28,40 +29,37 @@ from etl import generate_goodreads_csv
 
 def run(page: Page, user_id: str) -> None:
     """
-    Scrape all Skoob shelves for *user_id* and export a Goodreads CSV.
+    Read books from Skoob shelves and generate a Goodreads-compatible CSV.
     """
     if not user_id:
-        logger.error(
-            "No Skoob user_id available. Cannot scrape shelves.\n"
-            "Tip: after login, navigate to your profile so the script "
-            "can capture your user_id from the URL."
-        )
+        logger.error("No Skoob user_id available. Cannot scrape shelves.")
+        logger.info("Please pass your numeric Skoob user ID manually.")
         return
 
     all_books: list[dict[str, Any]] = []
 
-    # Iterate through each shelf type we care about
     for status_id, status_label in SKOOB_STATUS_IDS.items():
         goodreads_shelf = SKOOB_TO_GOODREADS_SHELF.get(status_label)
         if not goodreads_shelf:
             logger.debug(f"Skipping Skoob shelf '{status_label}' (no Goodreads mapping).")
             continue
 
-        logger.info(f"Scraping shelf: {status_label} (status_id={status_id}) → Goodreads '{goodreads_shelf}'")
-        books = _scrape_shelf(page, user_id, status_id, status_label, goodreads_shelf)
+        logger.info(f"Scraping Skoob shelf: {status_label} (id={status_id})...")
+        books = _scrape_shelf_via_api(page, user_id, status_id, status_label, goodreads_shelf)
         all_books.extend(books)
+        logger.info(f"  Found {len(books)} books in '{status_label}'.")
 
     if all_books:
         generate_goodreads_csv(all_books)
     else:
-        logger.warning("No books found on any Skoob shelf.")
+        logger.warning("No books found on Skoob shelves.")
 
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _scrape_shelf(
+def _scrape_shelf_via_api(
     page: Page,
     user_id: str,
     status_id: int,
@@ -69,100 +67,110 @@ def _scrape_shelf(
     goodreads_shelf: str,
 ) -> list[dict[str, Any]]:
     """
-    Paginate through a single Skoob shelf and extract book data.
+    Scrape all books from a Skoob shelf using the v1 JSON API.
+
+    Uses Playwright to make requests with the authenticated session cookies.
+    The API endpoint returns JSON with pagination.
     """
     books: list[dict[str, Any]] = []
     current_page = 1
+    limit = 50
 
     while True:
-        url = f"https://www.skoob.com.br/usuario/{user_id}/estante/tipo/{status_id}/page:{current_page}"
-        logger.debug(f"  Loading page {current_page}: {url}")
-        page.goto(url, wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
+        url = SKOOB_V1_BOOKCASE_URL.format(
+            user_id=user_id,
+            shelf_id=status_id,
+            page=current_page,
+            limit=limit,
+        )
 
-        # Collect book cards
-        cards = page.locator(".box_livro")
-        count = cards.count()
+        logger.debug(f"  Fetching: {url}")
 
-        if count == 0:
-            if current_page == 1:
-                logger.info(f"  Shelf '{status_label}' is empty.")
-            else:
+        try:
+            # Use Playwright to make the request with session cookies
+            response = page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_timeout(1000)
+
+            # Try to parse the page content as JSON
+            content = page.inner_text("body")
+            if not content or content.strip() == "":
+                logger.debug(f"  Empty response on page {current_page}, stopping.")
+                break
+
+            data = json.loads(content)
+            response_list = data.get("response", [])
+
+            if not response_list:
                 logger.debug(f"  No more books on page {current_page}.")
+                break
+
+            for item in response_list:
+                book = _parse_api_book(item, goodreads_shelf, status_label)
+                if book:
+                    books.append(book)
+
+            logger.debug(f"  Page {current_page}: {len(response_list)} books.")
+
+            # Check if there are more pages
+            paging = data.get("paging", {})
+            total_pages = paging.get("total_pages", 1) if paging else 1
+            if current_page >= total_pages:
+                break
+
+            current_page += 1
+            _jitter()
+
+        except json.JSONDecodeError:
+            logger.warning(f"  Could not parse JSON on page {current_page}. "
+                          "Skoob may require different auth or the API has changed.")
+            break
+        except Exception as exc:
+            logger.error(f"  Error fetching shelf page {current_page}: {exc}")
             break
 
-        logger.info(f"  Found {count} books on page {current_page}.")
-
-        for i in range(count):
-            card = cards.nth(i)
-            book = _extract_book_from_card(card, goodreads_shelf)
-            if book:
-                books.append(book)
-
-        # Check if there is a next page
-        # Skoob typically uses a pagination bar; if no "next" link, we stop
-        next_btn = page.locator("a.next, a[rel='next'], .pagination .next a")
-        if next_btn.count() == 0:
-            logger.debug("  No next-page link found — end of shelf.")
-            break
-
-        current_page += 1
-        _jitter()
-
-    logger.info(f"  Total from '{status_label}': {len(books)} books.")
     return books
 
 
-def _extract_book_from_card(card: Any, goodreads_shelf: str) -> dict[str, Any] | None:
-    """
-    Extract basic book metadata from a Skoob search/shelf card element.
-    """
+def _parse_api_book(
+    item: dict[str, Any],
+    goodreads_shelf: str,
+    status_label: str,
+) -> dict[str, Any] | None:
+    """Parse a book item from the Skoob v1 API response."""
     try:
-        # Title — usually an anchor or heading inside the card
-        title_el = card.locator("a[title], .box_livro__titulo, h2, h3").first
-        title = title_el.get_attribute("title") or title_el.inner_text()
-        title = title.strip()
+        edicao = item.get("edicao", {})
+        if not edicao:
+            return None
 
-        # Author — usually in a secondary line
-        author = ""
-        author_el = card.locator(".box_livro__autor, .autor, span.by a")
-        if author_el.count() > 0:
-            author = author_el.first.inner_text().strip()
+        title = (
+            edicao.get("nome_portugues")
+            or edicao.get("titulo")
+            or edicao.get("nome")
+            or ""
+        )
+        author = edicao.get("autor") or ""
+        isbn = edicao.get("isbn") or ""
 
-        # Rating — user rating if visible on the card
-        my_rating = ""
-        rating_el = card.locator("[data-nota], .rating .star.active, .estrelas .ativa")
-        if rating_el.count() > 0:
-            # Try data attribute first
-            nota = rating_el.first.get_attribute("data-nota")
-            if nota:
-                my_rating = nota
-            else:
-                my_rating = str(rating_el.count())
+        # Rating from the user's review
+        my_rating = str(item.get("rating", 0) or 0)
+
+        # Date read
+        date_read = item.get("dt_leitura") or ""
 
         return {
-            "title": title,
-            "author": author,
-            "isbn": "",  # ISBN is rarely visible on shelf cards
+            "title": title.strip(),
+            "author": author.strip(),
+            "isbn": isbn.strip(),
             "my_rating": my_rating,
-            "average_rating": "",
-            "publisher": "",
-            "binding": "",
-            "year_published": "",
-            "original_publication_year": "",
-            "date_read": "",
-            "date_added": "",
-            "shelves": goodreads_shelf,
-            "bookshelves": "",
-            "my_review": "",
+            "shelf": goodreads_shelf,
+            "date_read": date_read,
         }
     except Exception as exc:
-        logger.warning(f"  Failed to extract book from card: {exc}")
+        logger.warning(f"  Failed to parse book: {exc}")
         return None
 
 
 def _jitter() -> None:
     """Random sleep to mimic human behaviour."""
     delay = random.uniform(JITTER_MIN, JITTER_MAX)
-    logger.debug(f"  Sleeping {delay:.1f}s...")
     time.sleep(delay)

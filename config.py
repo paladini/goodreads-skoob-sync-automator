@@ -9,14 +9,20 @@ SKOOB_EXPORT_FILE: str = "skoob_export_for_goodreads.csv"
 
 # --- Skoob URLs ---
 SKOOB_LOGIN_URL: str = "https://www.skoob.com.br/login"
-SKOOB_SEARCH_URL_TEMPLATE: str = "https://www.skoob.com.br/livro/lista/busca:{query}"
-SKOOB_SHELF_URL_TEMPLATE: str = "https://www.skoob.com.br/usuario/{user_id}/estante/tipo/{status_id}/page:{page}"
+SKOOB_BASE_URL: str = "https://www.skoob.com.br"
+
+# v1 JSON API for reading bookcase (uses session cookies from browser)
+SKOOB_V1_BOOKCASE_URL: str = (
+    "https://www.skoob.com.br/v1/bookcase/books/{user_id}"
+    "/shelf_id:{shelf_id}/page:{page}/limit:{limit}/"
+)
 
 # --- Goodreads shelf → Skoob status (for Goodreads → Skoob) ---
+# Only "read" is enabled for now; uncomment the others when ready.
 GOODREADS_TO_SKOOB_SHELF: dict[str, str] = {
     "read": "Lido",
-    "currently-reading": "Lendo",
-    "to-read": "Vou Ler",
+    # "currently-reading": "Lendo",
+    # "to-read": "Quero Ler",
 }
 
 # --- Skoob status ID → shelf label ---
@@ -33,14 +39,15 @@ SKOOB_TO_GOODREADS_SHELF: dict[str, str] = {
     "Lido": "read",
     "Lendo": "currently-reading",
     "Quero Ler": "to-read",
-    "Vou Ler": "to-read",
 }
 
-# --- Skoob button ID selectors (for setting status on book detail page) ---
-SKOOB_BTN_SELECTORS: dict[str, str] = {
-    "Lido": "#bt_lido",
-    "Lendo": "#bt_lendo",
-    "Vou Ler": "#bt_quero",
+# --- Skoob status label → numeric ID for the v1 API ---
+SKOOB_STATUS_LABEL_TO_ID: dict[str, int] = {
+    "Lido": 1,
+    "Lendo": 2,
+    "Quero Ler": 3,
+    "Abandonei": 5,
+    "Relendo": 6,
 }
 
 # --- Timing ---

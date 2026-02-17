@@ -1,8 +1,8 @@
 """
 Human-in-the-loop authentication module for Skoob.
 
-Opens the Skoob login page in a visible browser and polls until
-the user has manually completed authentication.
+Opens the Skoob login page in a visible browser and waits for the user
+to press Enter in the terminal after logging in manually.
 """
 
 import time
@@ -16,12 +16,10 @@ from config import SKOOB_LOGIN_URL
 
 def wait_for_login(page: Page) -> str:
     """
-    Navigate to Skoob login and block until the user has logged in manually.
+    Navigate to Skoob login and wait for the user to confirm login via terminal.
 
-    Detection heuristics (any one triggers):
-      - URL contains ``/usuario/`` followed by digits.
-      - URL contains ``/timeline`` or ``/atividades``.
-      - DOM element ``#topo-user`` is present.
+    The user logs in manually (password, magic link, etc.) and then
+    presses **Enter** in the terminal to signal that authentication is done.
 
     Returns:
         The Skoob user ID extracted from the URL, or an empty string
@@ -30,50 +28,46 @@ def wait_for_login(page: Page) -> str:
     logger.info("Navigating to Skoob login page...")
     page.goto(SKOOB_LOGIN_URL, wait_until="domcontentloaded")
 
-    logger.info(
-        "┌─────────────────────────────────────────────────────┐\n"
-        "│  PLEASE LOG IN MANUALLY in the browser window.     │\n"
-        "│  The script will resume automatically once logged.  │\n"
-        "└─────────────────────────────────────────────────────┘"
-    )
+    print("\n" + "=" * 60)
+    print("  LOG IN TO SKOOB in the browser window.")
+    print("  Use email, password, magic link — whatever works.")
+    print("")
+    print("  When you are logged in, come back here and press ENTER.")
+    print("=" * 60)
 
-    user_id: str = ""
+    input("\n>>> Press ENTER after logging in to Skoob... ")
 
-    while True:
-        current_url = page.url
+    logger.success("User confirmed login. Resuming automation.")
 
-        # Check URL patterns that indicate a logged-in state
-        match = re.search(r"/usuario/(\d+)", current_url)
-        if match:
-            user_id = match.group(1)
-            logger.success(f"Login detected via URL (user_id={user_id}).")
-            break
+    # Give the page a moment to settle after login
+    time.sleep(2)
 
-        if "/timeline" in current_url or "/atividades" in current_url:
-            logger.success("Login detected via URL (timeline/atividades).")
-            break
-
-        # Check for authenticated DOM element
-        try:
-            if page.locator("#topo-user").count() > 0:
-                logger.success("Login detected via DOM element (#topo-user).")
-                break
-        except Exception:
-            pass
-
-        time.sleep(1)
-
-    # If we didn't capture the user_id from the URL, try to extract it from the page
-    if not user_id:
-        try:
-            # Navigate to home/profile to capture user_id from URL
-            page.goto("https://www.skoob.com.br/usuario/home", wait_until="domcontentloaded")
-            time.sleep(2)
-            match = re.search(r"/usuario/(\d+)", page.url)
-            if match:
-                user_id = match.group(1)
-                logger.info(f"Resolved user_id={user_id} from profile redirect.")
-        except Exception:
-            logger.warning("Could not resolve Skoob user_id. Shelf scraping may require manual URL.")
-
+    # Try to resolve the user_id
+    user_id = _resolve_user_id(page)
     return user_id
+
+
+def _resolve_user_id(page: Page) -> str:
+    """Try to extract the Skoob user_id by navigating to the user profile."""
+    try:
+        page.goto("https://www.skoob.com.br/usuario/home", wait_until="domcontentloaded")
+        time.sleep(2)
+
+        match = re.search(r"/usuario/(\d+)", page.url)
+        if match:
+            uid = match.group(1)
+            logger.info(f"Resolved user_id={uid} from profile redirect.")
+            return uid
+
+        # Try extracting from page content
+        content = page.content()
+        match = re.search(r'usuario[/_](\d+)', content)
+        if match:
+            uid = match.group(1)
+            logger.info(f"Resolved user_id={uid} from page content.")
+            return uid
+    except Exception:
+        pass
+
+    logger.warning("Could not resolve Skoob user_id. Shelf scraping may require manual URL.")
+    return ""
